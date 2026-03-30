@@ -6,21 +6,21 @@ A Python agent that collects news articles from left, center, and right-leaning 
 
 ## How it works
 
-The agent runs a tool-calling loop driven by an orchestrator LLM. Each run:
+The agent runs a deterministic parallel pipeline — no LLM orchestration loop. Each run:
 
 1. **search_news** — queries OpenRouter's Exa web search plugin, filtered to known-bias domains, to find recent articles per bias category
 2. **extract_articles** — downloads and parses full article text via `newspaper4k`
-3. **summarize_articles** — sends each article to a summarizer LLM (summary + key claims) and a rater LLM (factuality + bias scores)
+3. **summarize_articles** — sends each article to a summarizer LLM (summary + key claims) and a rater LLM (factuality + bias scores); articles within a bias category are summarized in parallel
 4. **compile_report** — assembles everything into a `BiasReport` per category, writes `output/YYYY-MM-DD.md` and returns a JSON summary
 
-Four task-specific models are used to balance cost and quality:
+Steps 1–3 run concurrently across all bias categories via a `ThreadedPipelineRunner`. Four task-specific models are used to balance cost and quality:
 
-| Task | Model |
-|---|---|
-| Orchestrator | `anthropic/claude-sonnet-4-5` |
-| Search | `openai/gpt-4.1-mini` |
-| Summarizer | `google/gemini-2.5-flash` |
-| Rater | `anthropic/claude-sonnet-4-5` |
+| Task | Default model | Selectable in UI |
+|---|---|---|
+| Orchestrator | `google/gemini-2.5-pro` | Yes |
+| Search | `perplexity/sonar` | Yes |
+| Summarizer | `google/gemini-3.1-flash-lite-preview` | Yes |
+| Rater | `anthropic/claude-sonnet-4.6` | Yes |
 
 All models are routed through [OpenRouter](https://openrouter.ai).
 
@@ -42,6 +42,7 @@ spectrum-news-agent/
 │   ├── logging_config.py    # JSON-structured logging with session/run context vars
 │   ├── report_compiler.py   # Markdown + JSON report assembly
 │   ├── schemas.py           # All data model dataclasses
+│   ├── pipeline.py          # Pipeline abstraction — BiasProcessorProtocol, ThreadedPipelineRunner, NewsBiasPipeline
 │   ├── sources.py           # Data-driven source registry (loaded from config.yml)
 │   ├── event_store/         # SQLite monitoring backend (Protocol + Null Object)
 │   └── tools/               # Tool definitions + handlers (one file per tool)
@@ -78,7 +79,7 @@ docker compose up --build web
 Then open [http://localhost:8501](http://localhost:8501) in your browser.
 
 - **Main window** — enter topics and select bias categories to include, then click **Run Analysis**. Results render in-page as a formatted report.
-- **Sidebar** — optional settings: articles-per-category count and a model info expander showing which LLM is used for each task.
+- **Sidebar** — optional settings: articles-per-category count, and a **Model Selection** expander with a dropdown per task (orchestrator, search, summarizer, rater) to choose from curated model options.
 
 ### 3. Run locally
 
@@ -123,7 +124,7 @@ Factuality labels follow [Media Bias / Fact Check (MBFC)](https://mediabiasfactc
 docker compose run --build --rm test
 ```
 
-The suite runs 191 tests and enforces ≥90% code coverage.
+The suite runs 202 tests and enforces ≥90% code coverage.
 
 ---
 
