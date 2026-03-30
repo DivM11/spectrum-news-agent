@@ -105,10 +105,8 @@ def extract_articles_tool(
             }
         )
 
-    # Update work state
-    if "extracted_articles" not in context.work_state:
-        context.work_state["extracted_articles"] = {}
-    context.work_state["extracted_articles"][bias_id] = article_records
+    # Update work state (setdefault is atomic in CPython — safe for concurrent bias calls)
+    context.work_state.setdefault("extracted_articles", {})[bias_id] = article_records
 
     ok_count = sum(1 for r in article_records if r["extraction_status"] == "ok")
     logger.info(

@@ -1,94 +1,68 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
-from src.agent import NewsAgent, _MAX_TOOL_CALLS
+from src.agent import NewsAgent
 from src.agent_models import AgentResult, Context
 from src.article_extractor import ArticleExtractor
 from src.event_store.null import NullEventStore
-from src.llm_service import LLMResponse
 from src.report_compiler import ReportCompiler
 from src.sources import SourceRegistry
 
 
 # ---------------------------------------------------------------------------
-# Stubs
+# Helpers / stubs
 # ---------------------------------------------------------------------------
 
-def _make_registry() -> SourceRegistry:
-    config = {
-        "biases": [{"id": "center", "label": "Center"}],
+
+def _make_registry(biases: tuple[str, ...] = ("center",)) -> SourceRegistry:
+    return SourceRegistry({
+        "biases": [{"id": b, "label": b.capitalize()} for b in biases],
         "sources": [
-            {"name": "Reuters", "domain": "reuters.com", "bias": "center", "factuality": "very_high"},
+            {"name": b[0].upper(), "domain": f"{b}.com", "bias": b, "factuality": "high"}
+            for b in biases
         ],
-    }
-    return SourceRegistry(config)
+    })
 
 
-def _no_tool_response(message: str = "All done.") -> LLMResponse:
-    return LLMResponse(
-        content=message,
-        tool_calls=[],
-        raw_message={"role": "assistant", "content": message},
-        prompt_tokens=10,
-        completion_tokens=5,
-        model="test-model",
-    )
-
-
-def _tool_response(tool_name: str, arguments: dict[str, Any]) -> LLMResponse:
-    tc = {
-        "id": "call-1",
-        "type": "function",
-        "function": {"name": tool_name, "arguments": json.dumps(arguments)},
-    }
-    return LLMResponse(
-        content=None,
-        tool_calls=[tc],
-        raw_message={"role": "assistant", "content": None, "tool_calls": [tc]},
-        prompt_tokens=10,
-        completion_tokens=5,
-        model="test-model",
-    )
-
-
-@dataclass
-class _ScriptedLLMService:
-    """Returns responses from a queue; last one is repeated indefinitely."""
-
-    responses: list[LLMResponse] = field(default_factory=list)
-    _index: int = field(default=0, init=False, repr=False)
-
-    def call(self, messages: list[dict], task: str = "orchestrator", tools: Any = None, plugins: Any = None) -> LLMResponse:
-        if not self.responses:
-            return _no_tool_response()
-        resp = self.responses[min(self._index, len(self.responses) - 1)]
-        self._index += 1
-        return resp
-
-
-@dataclass
-class _StubExtractor:
-    def extract(self, url: str) -> Any:
-        pass
-
-    def extract_batch(self, urls: list[str]) -> list[Any]:
-        return []
-
-
-def _make_agent(llm_service: Any, registry: SourceRegistry | None = None) -> NewsAgent:
+def _make_agent(
+    registry: SourceRegistry | None = None,
+    output_dir: str = "output",
+) -> NewsAgent:
     return NewsAgent(
-        config={"agent": {"articles_per_bias": 2, "system_prompt": "System {date} {topics} {biases} {articles_per_bias}"}},
-        llm_service=llm_service,
+        config={"agent": {"articles_per_bias": 2}},
+        llm_service=None,  # type: ignore[arg-type]  # patched — pipeline calls are stubbed
         source_registry=registry or _make_registry(),
-        article_extractor=_StubExtractor(),  # type: ignore[arg-type]
+        article_extractor=ArticleExtractor(),
         report_compiler=ReportCompiler(),
         event_store=NullEventStore(),
-        output_dir="output",
+        output_dir=output_dir,
+    )
+
+
+class _NoopRunner:
+    """Pipeline runner that does nothing (no-op for tests)."""
+
+    def run(self, bias_ids: list[str], ctx: Context, processor: Any) -> None:
+        pass
+
+
+def _patch_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    compile_result: dict[str, Any] | None = None,
+) -> None:
+    """Stub out the pipeline runner and compile_report_tool."""
+    monkeypatch.setattr("src.agent.ThreadedPipelineRunner", lambda **_kw: _NoopRunner())
+    result = compile_result or {"output_path": None, "total_articles": 0, "summary": {}}
+    monkeypatch.setattr(
+        "src.tools.compile_report.compile_report_tool",
+        lambda **_kw: json.dumps(result),
     )
 
 
@@ -96,143 +70,89 @@ def _make_agent(llm_service: Any, registry: SourceRegistry | None = None) -> New
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_agent_run_returns_agent_result() -> None:
-    svc = _ScriptedLLMService(responses=[_no_tool_response("Done!")])
-    agent = _make_agent(svc)
 
-    result = agent.run(topics=["economy"])
-
+def test_agent_run_returns_agent_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_noop(monkeypatch)
+    result = _make_agent().run(topics=["economy"])
     assert isinstance(result, AgentResult)
     assert result.error is None
 
 
-def test_agent_run_no_tool_calls_finishes_quickly() -> None:
-    svc = _ScriptedLLMService(responses=[_no_tool_response()])
-    agent = _make_agent(svc)
-
-    result = agent.run(topics=["tech"])
-
-    assert result.error is None
-    assert result.metadata["tool_invocations"] == 0
-
-
-def test_agent_run_executes_known_tool() -> None:
-    # First call returns a search_news tool call, second returns final answer
-    svc = _ScriptedLLMService(
-        responses=[
-            _tool_response("search_news", {"bias_id": "center", "topics": ["tech"]}),
-            _no_tool_response("Done"),
-        ]
-    )
-    agent = _make_agent(svc)
-
-    result = agent.run(topics=["tech"])
-
-    # 1 tool call was made (search_news)
-    assert result.metadata["tool_invocations"] == 1
-
-
-def test_agent_run_handles_unknown_tool_gracefully() -> None:
-    svc = _ScriptedLLMService(
-        responses=[
-            _tool_response("nonexistent_tool", {}),
-            _no_tool_response("Done"),
-        ]
-    )
-    agent = _make_agent(svc)
-
-    result = agent.run(topics=["news"])
-
-    assert result.error is None
-    assert result.metadata["tool_invocations"] == 1
-
-
-def test_agent_run_respects_max_tool_calls() -> None:
-    """Agent must stop after _MAX_TOOL_CALLS even if LLM keeps requesting tools."""
-    always_tool_svc = _ScriptedLLMService(
-        responses=[_tool_response("search_news", {"bias_id": "center", "topics": ["x"]})] * (_MAX_TOOL_CALLS + 5)
-    )
-    agent = _make_agent(always_tool_svc)
-
-    result = agent.run(topics=["economy"])
-
-    assert result.metadata["tool_invocations"] <= _MAX_TOOL_CALLS
-
-
-def test_agent_run_records_session_and_run_id() -> None:
-    svc = _ScriptedLLMService(responses=[_no_tool_response()])
-    agent = _make_agent(svc)
-
-    result = agent.run(topics=["news"])
-
+def test_agent_run_records_session_and_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_noop(monkeypatch)
+    result = _make_agent().run(topics=["news"])
     assert result.session_id != ""
     assert result.run_id != ""
     assert result.session_id != result.run_id
 
 
-def test_agent_run_passes_biases_to_context() -> None:
-    svc = _ScriptedLLMService(responses=[_no_tool_response()])
-    registry = SourceRegistry({
-        "biases": [{"id": "left", "label": "Left"}, {"id": "right", "label": "Right"}],
-        "sources": [
-            {"name": "L", "domain": "l.com", "bias": "left", "factuality": "mixed"},
-            {"name": "R", "domain": "r.com", "bias": "right", "factuality": "mixed"},
-        ],
-    })
-    agent = _make_agent(svc, registry)
+def test_agent_run_passes_selected_biases_to_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = _make_registry(biases=("left", "right"))
+    biases_received: list[str] = []
 
-    result = agent.run(topics=["news"], biases=["left"])
+    class _CapturingRunner:
+        def run(self, bias_ids: list[str], ctx: Context, processor: Any) -> None:
+            biases_received.extend(bias_ids)
 
-    assert result.error is None
-
-
-def test_agent_run_llm_exception_sets_error() -> None:
-    @dataclass
-    class _ErrorLLMService:
-        def call(self, messages: list[dict], task: str = "o", tools: Any = None, plugins: Any = None) -> LLMResponse:
-            raise RuntimeError("LLM API down")
-
-    agent = _make_agent(_ErrorLLMService())
-
-    result = agent.run(topics=["news"])
-
-    assert result.error is not None
-    assert "LLM API down" in result.error
+    monkeypatch.setattr("src.agent.ThreadedPipelineRunner", lambda **_kw: _CapturingRunner())
+    monkeypatch.setattr(
+        "src.tools.compile_report.compile_report_tool",
+        lambda **_kw: json.dumps({"output_path": None, "total_articles": 0}),
+    )
+    _make_agent(registry=registry).run(topics=["news"], biases=["left"])
+    assert biases_received == ["left"]
 
 
-def test_agent_uses_all_registry_biases_by_default() -> None:
-    registry = SourceRegistry({
-        "biases": [{"id": "left", "label": "Left"}, {"id": "center", "label": "Center"}],
-        "sources": [
-            {"name": "L", "domain": "l.com", "bias": "left", "factuality": "high"},
-            {"name": "C", "domain": "c.com", "bias": "center", "factuality": "very_high"},
-        ],
-    })
-    svc = _ScriptedLLMService(responses=[_no_tool_response()])
-    agent = _make_agent(svc, registry)
+def test_agent_run_uses_all_registry_biases_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = _make_registry(biases=("left", "center", "right"))
+    biases_received: list[str] = []
 
-    result = agent.run(topics=["news"])
+    class _CapturingRunner:
+        def run(self, bias_ids: list[str], ctx: Context, processor: Any) -> None:
+            biases_received.extend(bias_ids)
 
-    # Should complete without error — didn't restrict biases
-    assert result.error is None
+    monkeypatch.setattr("src.agent.ThreadedPipelineRunner", lambda **_kw: _CapturingRunner())
+    monkeypatch.setattr(
+        "src.tools.compile_report.compile_report_tool",
+        lambda **_kw: json.dumps({"output_path": None, "total_articles": 0}),
+    )
+    _make_agent(registry=registry).run(topics=["news"])
+    assert set(biases_received) == {"left", "center", "right"}
 
 
-def test_agent_fallback_compile_runs_when_llm_skips_compile_report() -> None:
-    """If the LLM never calls compile_report, the agent must still generate the report file."""
-    import tempfile, os
+def test_agent_run_always_calls_compile_report(monkeypatch: pytest.MonkeyPatch) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
-        # LLM only fires one search_news call then gives a final answer without calling compile_report
-        svc = _ScriptedLLMService(
-            responses=[
-                _tool_response("search_news", {"bias_id": "center", "topics": ["tech"]}),
-                _no_tool_response("I found some articles but will not call compile_report."),
-            ]
-        )
-        agent = _make_agent(svc)
-        agent._output_dir = tmpdir
+        compile_calls: list[dict[str, Any]] = []
 
-        result = agent.run(topics=["tech"])
+        def _spy_compile(**kw: Any) -> str:
+            compile_calls.append(kw)
+            return json.dumps({"output_path": os.path.join(tmpdir, "out.md"), "total_articles": 0})
 
-        # Fallback compilation must have written a file
-        assert result.output_path is not None
-        assert os.path.exists(result.output_path)
+        monkeypatch.setattr("src.agent.ThreadedPipelineRunner", lambda **_kw: _NoopRunner())
+        monkeypatch.setattr("src.tools.compile_report.compile_report_tool", _spy_compile)
+        _make_agent(output_dir=tmpdir).run(topics=["news"])
+        assert len(compile_calls) == 1
+
+
+def test_agent_run_pipeline_error_sets_result_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _ErrorRunner:
+        def run(self, bias_ids: list[str], ctx: Context, processor: Any) -> None:
+            raise RuntimeError("pipeline boom")
+
+    monkeypatch.setattr("src.agent.ThreadedPipelineRunner", lambda **_kw: _ErrorRunner())
+    result = _make_agent().run(topics=["news"])
+    assert result.error is not None
+    assert "pipeline boom" in result.error
+
+
+def test_agent_run_output_path_and_total_from_compile(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected_path = "/tmp/test-report.md"
+    monkeypatch.setattr("src.agent.ThreadedPipelineRunner", lambda **_kw: _NoopRunner())
+    monkeypatch.setattr(
+        "src.tools.compile_report.compile_report_tool",
+        lambda **_kw: json.dumps({"output_path": expected_path, "total_articles": 7}),
+    )
+    result = _make_agent().run(topics=["news"])
+    assert result.output_path == expected_path
+    assert result.total_articles == 7
+

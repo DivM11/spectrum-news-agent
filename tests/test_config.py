@@ -25,11 +25,21 @@ openrouter:
     base_url: "https://openrouter.ai/api/v1"
   models:
     orchestrator:
-      id: "test-model"
+      id: "test-orchestrator"
       max_tokens: 100
       temperature: 0.2
+    search:
+      id: "test-search"
+      max_tokens: 100
+      temperature: 0.3
     summarizer:
       id: "test-summarizer"
+      max_tokens: 200
+      temperature: 0.3
+    rater:
+      id: "test-rater"
+      max_tokens: 100
+      temperature: 0.1
 agent:
   articles_per_bias: 3
   max_tool_rounds: 10
@@ -88,7 +98,9 @@ def test_load_config_preserves_nested_structure(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     cfg_path = _minimal_config(tmp_path)
     result = load_config(cfg_path)
-    assert result["openrouter"]["models"]["orchestrator"]["id"] == "test-model"
+    assert result["openrouter"]["models"]["search"]["id"] == "test-search"
+    assert result["openrouter"]["models"]["summarizer"]["id"] == "test-summarizer"
+    assert result["openrouter"]["models"]["rater"]["id"] == "test-rater"
     assert result["agent"]["articles_per_bias"] == 3
 
 

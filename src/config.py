@@ -11,8 +11,9 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config.yml"
 
 _REQUIRED_KEYS = [
     "openrouter.api.key_env_var",
-    "openrouter.models.orchestrator.id",
+    "openrouter.models.search.id",
     "openrouter.models.summarizer.id",
+    "openrouter.models.rater.id",
     "agent.articles_per_bias",
     "event_store.backend",
 ]

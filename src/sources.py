@@ -64,3 +64,7 @@ class SourceRegistry:
     @property
     def all_sources(self) -> list[SourceInfo]:
         return list(self._sources)
+
+    def get_factuality_map(self) -> dict[str, str]:
+        """Return a domain → MBFC factuality label mapping for all sources."""
+        return {s.domain: s.factuality for s in self._sources}

@@ -78,21 +78,29 @@ except Exception as exc:
 
 setup_logging(base_config)
 
-# Show model info in sidebar once config is loaded
+# Show model selection in sidebar once config is loaded
 with st.sidebar:
     st.divider()
     models_cfg: dict[str, Any] = base_config.get("openrouter", {}).get("models", {})
-    with st.expander("🤖 Models", expanded=False):
-        _label_map = {
-            "orchestrator": "Orchestrator",
-            "search": "Search",
-            "summarizer": "Summarizer",
-            "rater": "Rater",
-        }
-        for task_key, task_label in _label_map.items():
-            mdl = models_cfg.get(task_key, {})
-            model_id = mdl.get("id", "N/A")
-            st.caption(f"**{task_label}:** `{model_id}`")
+    _label_map = {
+        "orchestrator": "Orchestrator",
+        "search": "Search",
+        "summarizer": "Summarizer",
+        "rater": "Rater",
+    }
+    selected_models: dict[str, str] = {}
+    with st.expander("🤖 Model Selection", expanded=False):
+        for _task_key, _task_label in _label_map.items():
+            _mdl = models_cfg.get(_task_key, {})
+            _choices = _mdl.get("choices", [_mdl.get("id", "")])
+            _default = _mdl.get("id", _choices[0] if _choices else "")
+            _idx = _choices.index(_default) if _default in _choices else 0
+            selected_models[_task_key] = st.selectbox(
+                _task_label,
+                options=_choices,
+                index=_idx,
+                key=f"model__{_task_key}",
+            )
 
 all_bias_configs: list[dict[str, str]] = source_registry.get_all_bias_configs()
 output_dir: str = base_config.get("agent", {}).get("output_dir", "output")
@@ -158,9 +166,12 @@ if run_btn:
         st.error("Set the OPENROUTER_API_KEY environment variable before running.")
         st.stop()
 
-    # Deep-copy so sidebar slider overrides don't mutate the cached config
+    # Deep-copy so sidebar overrides don't mutate the cached config
     cfg = copy.deepcopy(base_config)
     cfg.setdefault("agent", {})["articles_per_bias"] = articles_per_bias
+    # Apply user-selected models
+    for _task_key, _model_id in selected_models.items():
+        cfg.setdefault("openrouter", {}).setdefault("models", {}).setdefault(_task_key, {})["id"] = _model_id
 
     result = None
     with st.status("Running analysis…", expanded=True) as status_widget:

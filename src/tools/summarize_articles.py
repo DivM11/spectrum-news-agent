@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from src.agent_models import Context
@@ -97,25 +98,41 @@ def summarize_articles_tool(
 
     summaries: list[dict[str, Any]] = []
 
-    for article_dict in extracted:
-        title = article_dict.get("title") or article_dict.get("url", "?")
-        logger.info(
-            "Summarising article",
-            extra={"bias_id": bias_id, "title": title[:80]},
-        )
-        summary_dict = _summarize_one(article_dict, bias_id, llm_service, event_store, run_id, session_id)
-        if summary_dict is not None:
-            summaries.append(summary_dict)
+    # Parallelise per-article summarisation (LLM calls are I/O-bound)
+    _max_article_workers = min(len(extracted), 4)
+    with ThreadPoolExecutor(max_workers=_max_article_workers) as executor:
+        futures = [
+            executor.submit(
+                _summarize_one_logged, article_dict, bias_id, llm_service, event_store, run_id, session_id
+            )
+            for article_dict in extracted
+        ]
+        for future in futures:
+            result = future.result()  # propagate exceptions; _summarize_one_logged handles its own
+            if result is not None:
+                summaries.append(result)
 
-    if "summaries" not in context.work_state:
-        context.work_state["summaries"] = {}
-    context.work_state["summaries"][bias_id] = summaries
+    # setdefault is atomic in CPython — safe for concurrent bias calls
+    context.work_state.setdefault("summaries", {})[bias_id] = summaries
 
     logger.info(
         "summarize_articles completed",
         extra={"bias_id": bias_id, "count": len(summaries)},
     )
     return json.dumps({"bias_id": bias_id, "count": len(summaries), "summaries": summaries})
+
+
+def _summarize_one_logged(
+    article_dict: dict[str, Any],
+    bias_id: str,
+    llm_service: LLMServiceProtocol,
+    event_store: EventStore,
+    run_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    title = article_dict.get("title") or article_dict.get("url", "?")
+    logger.info("Summarising article", extra={"bias_id": bias_id, "title": title[:80]})
+    return _summarize_one(article_dict, bias_id, llm_service, event_store, run_id, session_id)
 
 
 def _summarize_one(
