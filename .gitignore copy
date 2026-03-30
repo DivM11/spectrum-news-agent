@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.github/
+todo.md
+deployment/
+.secrets

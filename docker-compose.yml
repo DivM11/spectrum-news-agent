@@ -1,0 +1,26 @@
+services:
+  web:
+    build: .
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    env_file:
+      - .secrets
+    ports:
+      - "8501:8501"
+    volumes:
+      - event-data:/app/data
+      - ./output:/app/output
+
+  test:
+    build: .
+    command: ["pytest", "-v", "--tb=short"]
+    profiles:
+      - test
+
+  lint:
+    build: .
+    command: ["sh", "-c", "ruff check . && ruff format --check . && mypy src/"]
+    profiles:
+      - lint
+
+volumes:
+  event-data:

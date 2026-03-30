@@ -1,0 +1,259 @@
+app:
+  title: "Spectrum News Agent"
+  version: "0.1.0"
+
+logging:
+  level: "INFO"
+  format: "text"
+  include_timestamps: true
+  include_correlation_ids: true
+
+# ── Multi-model LLM configuration ──────────────────────────────────────────────
+# Each task routes to a specific model. Add or change models here without code changes.
+openrouter:
+  api:
+    key_env_var: "OPENROUTER_API_KEY"
+    base_url: "https://openrouter.ai/api/v1"
+    http_referer: "https://github.com/spectrum-news-agent"
+    x_title: "Spectrum News Agent"
+  models:
+    # Main agent orchestration loop (tool-calling capable model required)
+    orchestrator:
+      id: "anthropic/claude-sonnet-4-5"
+      max_tokens: 4096
+      temperature: 0.2
+    # Search query generation + web plugin calls (cheaper model)
+    search:
+      id: "openai/gpt-4.1-mini"
+      max_tokens: 1024
+      temperature: 0.3
+    # Per-article summarization (fast, cheap)
+    summarizer:
+      id: "google/gemini-2.5-flash"
+      max_tokens: 2048
+      temperature: 0.3
+    # Factuality and bias rating (more careful, accurate)
+    rater:
+      id: "anthropic/claude-sonnet-4-5"
+      max_tokens: 1024
+      temperature: 0.1
+
+# ── Web search plugin configuration ────────────────────────────────────────────
+web_search:
+  engine: "exa"       # Options: "exa", "native", "firecrawl", "parallel"
+  max_results: 10     # Max results returned per search call
+
+# ── Agent behavior ──────────────────────────────────────────────────────────────
+agent:
+  max_tool_rounds: 50
+  articles_per_bias: 5  # N articles to collect per bias category (configurable)
+  max_topics: 5         # Max number of topics a user can specify per run
+  output_dir: "output"  # Directory reports are written to
+
+  system_prompt: |
+    You are a news analysis agent. Your job is to collect, extract, and analyze
+    news articles across different political bias categories for the given topics.
+
+    Today's date: {date}
+    Topics to cover: {topics}
+    Bias categories to process: {biases}
+    Articles per bias category: {articles_per_bias}
+
+    Follow these steps in order:
+
+    For EACH bias category listed above:
+      1. Call search_news with the bias ID and the topics list to find article URLs.
+      2. Call extract_articles with the list of URLs returned by search_news.
+      3. Call summarize_articles with the extracted article data.
+
+    After ALL bias categories have been processed:
+      4. Call compile_report once to generate the final output.
+
+    Important rules:
+    - Process each bias category fully (search → extract → summarize) before moving to the next.
+    - If search or extraction partially fails, continue with the available articles.
+    - Do not skip any bias category unless it has zero configured sources.
+    - Do not call compile_report until all bias categories are done.
+
+# ── Bias definitions ────────────────────────────────────────────────────────────
+# Generic and data-driven. Add new biases here without touching source code.
+biases:
+  - id: "left"
+    label: "Left / Progressive"
+  - id: "center"
+    label: "Center / Neutral"
+  - id: "right"
+    label: "Right / Conservative"
+
+# ── Source registry ─────────────────────────────────────────────────────────────
+# Independent of bias template. Each source references a bias ID.
+# Factuality scale (from MBFC): very_high, high, mostly_factual, mixed, low, very_low
+sources:
+  # ── Left ─────────────────────────────────────────────────
+  - name: "MSNBC"
+    domain: "msnbc.com"
+    bias: "left"
+    factuality: "mixed"
+  - name: "The Nation"
+    domain: "thenation.com"
+    bias: "left"
+    factuality: "mostly_factual"
+  - name: "HuffPost"
+    domain: "huffpost.com"
+    bias: "left"
+    factuality: "mostly_factual"
+  - name: "Mother Jones"
+    domain: "motherjones.com"
+    bias: "left"
+    factuality: "mostly_factual"
+  - name: "Jacobin"
+    domain: "jacobin.com"
+    bias: "left"
+    factuality: "mostly_factual"
+  - name: "Democracy Now"
+    domain: "democracynow.org"
+    bias: "left"
+    factuality: "high"
+  - name: "Salon"
+    domain: "salon.com"
+    bias: "left"
+    factuality: "mixed"
+  - name: "The Intercept"
+    domain: "theintercept.com"
+    bias: "left"
+    factuality: "mostly_factual"
+
+  # ── Center (mainstream / establishment) ─────────────────
+  - name: "CNN"
+    domain: "cnn.com"
+    bias: "center"
+    factuality: "mostly_factual"
+  - name: "The New York Times"
+    domain: "nytimes.com"
+    bias: "center"
+    factuality: "high"
+  - name: "The Washington Post"
+    domain: "washingtonpost.com"
+    bias: "center"
+    factuality: "mostly_factual"
+  - name: "NBC News"
+    domain: "nbcnews.com"
+    bias: "center"
+    factuality: "mostly_factual"
+  - name: "The Guardian"
+    domain: "theguardian.com"
+    bias: "center"
+    factuality: "mostly_factual"
+  - name: "NPR"
+    domain: "npr.org"
+    bias: "center"
+    factuality: "high"
+  - name: "Politico"
+    domain: "politico.com"
+    bias: "center"
+    factuality: "high"
+  - name: "BBC"
+    domain: "bbc.com"
+    bias: "center"
+    factuality: "high"
+
+  # ── Center ────────────────────────────────────────────────
+  - name: "Reuters"
+    domain: "reuters.com"
+    bias: "center"
+    factuality: "very_high"
+  - name: "Associated Press"
+    domain: "apnews.com"
+    bias: "center"
+    factuality: "very_high"
+  - name: "The Hill"
+    domain: "thehill.com"
+    bias: "center"
+    factuality: "mostly_factual"
+  - name: "USA Today"
+    domain: "usatoday.com"
+    bias: "center"
+    factuality: "mostly_factual"
+  - name: "PBS NewsHour"
+    domain: "pbs.org"
+    bias: "center"
+    factuality: "very_high"
+  - name: "C-SPAN"
+    domain: "c-span.org"
+    bias: "center"
+    factuality: "very_high"
+
+  # ── Right (conservative / right-leaning) ─────────────────
+  - name: "The Wall Street Journal"
+    domain: "wsj.com"
+    bias: "right"
+    factuality: "mostly_factual"
+  - name: "The Economist"
+    domain: "economist.com"
+    bias: "right"
+    factuality: "high"
+  - name: "Forbes"
+    domain: "forbes.com"
+    bias: "right"
+    factuality: "mostly_factual"
+  - name: "National Review"
+    domain: "nationalreview.com"
+    bias: "right"
+    factuality: "mostly_factual"
+  - name: "RealClearPolitics"
+    domain: "realclearpolitics.com"
+    bias: "right"
+    factuality: "mixed"
+
+  # ── Right ─────────────────────────────────────────────────
+  - name: "Fox News"
+    domain: "foxnews.com"
+    bias: "right"
+    factuality: "mixed"
+  - name: "Daily Wire"
+    domain: "dailywire.com"
+    bias: "right"
+    factuality: "mixed"
+  - name: "Breitbart"
+    domain: "breitbart.com"
+    bias: "right"
+    factuality: "low"
+  - name: "The Daily Caller"
+    domain: "dailycaller.com"
+    bias: "right"
+    factuality: "mixed"
+  - name: "Newsmax"
+    domain: "newsmax.com"
+    bias: "right"
+    factuality: "mixed"
+  - name: "The Federalist"
+    domain: "thefederalist.com"
+    bias: "right"
+    factuality: "mixed"
+  - name: "Washington Examiner"
+    domain: "washingtonexaminer.com"
+    bias: "right"
+    factuality: "mostly_factual"
+  - name: "New York Post"
+    domain: "nypost.com"
+    bias: "right"
+    factuality: "mixed"
+
+# ── Default topics ──────────────────────────────────────────────────────────────
+default_topics:
+  - "US Politics"
+  - "Economy"
+  - "Technology"
+
+# ── Event store (monitoring — no article content stored) ────────────────────────
+event_store:
+  enabled: true
+  backend: "sqlite"
+  schema_version: 1
+  sqlite:
+    db_path: "data/events.db"
+
+# ── Output ──────────────────────────────────────────────────────────────────────
+output:
+  directory: "output"
+  big_doc_format: "markdown"  # PDF support deferred to a future version
