@@ -7,6 +7,7 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
+agent-monitoring = { path = "../agent-monitoring", develop = true }
 openai = "*"
 omegaconf = "*"
 newspaper4k = "*"

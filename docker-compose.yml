@@ -1,6 +1,9 @@
 services:
   web:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        agent_monitoring: ../agent-monitoring
     command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     env_file:
       - .secrets
@@ -11,13 +14,19 @@ services:
       - ./output:/app/output
 
   test:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        agent_monitoring: ../agent-monitoring
     command: ["pytest", "-v", "--tb=short"]
     profiles:
       - test
 
   lint:
-    build: .
+    build:
+      context: .
+      additional_contexts:
+        agent_monitoring: ../agent-monitoring
     command: ["sh", "-c", "ruff check . && ruff format --check . && mypy src/"]
     profiles:
       - lint

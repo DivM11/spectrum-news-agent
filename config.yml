@@ -271,6 +271,8 @@ event_store:
   schema_version: 1
   sqlite:
     db_path: "data/events.db"
+  postgres:
+    dsn_env_var: "EVENT_STORE_DSN"
 
 # ── Output ──────────────────────────────────────────────────────────────────────
 output:
