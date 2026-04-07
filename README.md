@@ -128,6 +128,27 @@ The suite runs 202 tests and enforces ≥90% code coverage.
 
 ---
 
+## Cloud Build
+
+Use `cloudbuild.yaml` for hosted CI, Artifact Registry builds, and optional Cloud Run CD. It clones the sibling `agent-monitoring` repo automatically and passes it as the named Docker build context required by the Dockerfile.
+
+```bash
+gcloud builds submit --config cloudbuild.yaml --substitutions=_LOCATION=us-central1,_REPOSITORY=agents,_IMAGE_TAG=manual,_AGENT_MONITORING_REF=main
+```
+
+For trigger-based builds, set `_IMAGE_TAG=$SHORT_SHA`.
+
+- CI triggers: `_RUN_DEPLOY=false`, `_AGENT_MONITORING_REF=main`
+- Production triggers: `_RUN_DEPLOY=true`, `_AGENT_MONITORING_REF=<tag-or-commit>`
+
+The build config now includes an optional deploy step that runs `gcloud run deploy` after lint and tests pass. Repo defaults already define the target service name, port, and secret bindings; production triggers only need to override `_IMAGE_TAG`, `_RUN_DEPLOY`, and `_AGENT_MONITORING_REF`.
+
+If your Secret Manager names differ from the repo defaults, override `_DEPLOY_SECRETS` in the trigger substitutions.
+
+The shared `agent-monitoring` repo now has its own Cloud Build deploy path for the monitoring API and UI. The next useful addition there is a repo-local teardown script for any monitoring-specific IAP or load-balancer resources once that infrastructure is codified in that repo.
+
+---
+
 ## Monitoring
 
 When `event_store.backend: sqlite` is set in `config.yml`, every run writes structured records to a local SQLite database (`data/events.db` by default):
